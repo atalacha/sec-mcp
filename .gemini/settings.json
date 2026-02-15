@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "sec-mcp": {
+      "url": "https://sec-mcp-191142790992.us-central1.run.app/sse",
+      "type": "sse"
+    }
+  }
+}

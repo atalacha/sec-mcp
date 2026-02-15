@@ -33,6 +33,7 @@ mcp_server = Server("google-workspace-mcp")
 
 @mcp_server.list_tools()
 async def list_tools() -> list[types.Tool]:
+    print("📋 Listing tools...", file=sys.stderr)
     return [
         types.Tool(
             name=tool.name,
@@ -44,14 +45,16 @@ async def list_tools() -> list[types.Tool]:
 
 @mcp_server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
-    print(f"🛠️ Tool Called: {name}", file=sys.stderr)
+    print(f"🛠️ Tool Called: {name} with args: {arguments}", file=sys.stderr)
     if name not in tool_map:
         raise ValueError(f"Unknown tool: {name}")
 
     try:
         result = await tool_map[name].run(arguments)
+        print(f"✅ Tool {name} executed successfully", file=sys.stderr)
         return [types.TextContent(type="text", text=str(result))]
     except Exception as e:
+        print(f"❌ Error executing {name}: {str(e)}", file=sys.stderr)
         return [types.TextContent(type="text", text=f"Error executing {name}: {str(e)}")]
 
 # --- 3. WEB SERVER (PURE ASGI) ---
@@ -78,9 +81,25 @@ async def app(scope, receive, send):
             )
             
     # Route 2: The Message Handler (POST /messages)
-    elif path == "/messages" and method == "POST":
-        print(f"📩 Received POST message", file=sys.stderr)
+    elif (path == "/messages" or path == "/") and method == "POST":
+        print(f"📩 Received POST message on {path}", file=sys.stderr)
+        # Add CORS headers
+        headers = [
+            (b"access-control-allow-origin", b"*"),
+            (b"access-control-allow-methods", b"POST, GET, OPTIONS"),
+            (b"access-control-allow-headers", b"content-type"),
+        ]
+        if method == "OPTIONS":
+            await send({"type": "http.response.start", "status": 204, "headers": headers})
+            await send({"type": "http.response.body", "body": b""})
+            return
         await sse.handle_post_message(scope, receive, send)
+
+    # Route 3: Health Check / Root (GET /)
+    elif path == "/" and method == "GET":
+        headers = [(b"content-type", b"text/plain"), (b"access-control-allow-origin", b"*")]
+        await send({"type": "http.response.start", "status": 200, "headers": headers})
+        await send({"type": "http.response.body", "body": b"MCP Server is running"})
         
     # 404 Not Found for anything else
     else:
