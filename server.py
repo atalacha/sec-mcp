@@ -4,21 +4,22 @@ import uvicorn
 import mcp.types as types
 from mcp.server import Server
 from mcp.server.sse import SseServerTransport
-from starlette.applications import Starlette
-from starlette.routing import Route, Mount
-from starlette.requests import Request
-from starlette.responses import Response
 
-# Import your existing auth and tools
+# Import your auth and tools
 from utils.auth import get_credentials, get_people_service, get_storage_client
 from tools.contacts import GetListContacts, CreateContacts
 from tools.gcs import GetFileFromGCS
 
-# --- 1. SETUP RESOURCES (Same as before) ---
-# Note: On Cloud Run, this should ideally use Service Account logic
-creds = get_credentials() 
-people_service = get_people_service(creds)
-storage_client = get_storage_client(creds)
+# --- 1. SETUP RESOURCES ---
+print("Initializing resources...", file=sys.stderr)
+try:
+    creds = get_credentials()
+    people_service = get_people_service(creds)
+    storage_client = get_storage_client(creds)
+    print("✅ Resources ready.", file=sys.stderr)
+except Exception as e:
+    print(f"❌ Error initializing resources: {e}", file=sys.stderr)
+    sys.exit(1)
 
 tool_instances = [
     GetListContacts(people_service),
@@ -27,12 +28,8 @@ tool_instances = [
 ]
 tool_map = {tool.name: tool for tool in tool_instances}
 
-# --- 2. SETUP MCP SERVER OBJECT ---
-# This is the "brain" of the agent
+# --- 2. SETUP MCP SERVER ---
 mcp_server = Server("google-workspace-mcp")
-
-# --- 3. RESTORE THE LOGIC ---
-# These are exactly the same as your local version!
 
 @mcp_server.list_tools()
 async def list_tools() -> list[types.Tool]:
@@ -47,6 +44,7 @@ async def list_tools() -> list[types.Tool]:
 
 @mcp_server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
+    print(f"🛠️ Tool Called: {name}", file=sys.stderr)
     if name not in tool_map:
         raise ValueError(f"Unknown tool: {name}")
 
@@ -56,42 +54,40 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent | type
     except Exception as e:
         return [types.TextContent(type="text", text=f"Error executing {name}: {str(e)}")]
 
-# --- 4. WEB SERVER ADAPTER (New for Cloud Run) ---
-# Instead of stdio, we use HTTP SSE (Server-Sent Events)
-
+# --- 3. WEB SERVER (PURE ASGI) ---
+# We configure the transport to tell the client: "POST your messages to /messages"
 sse = SseServerTransport("/messages")
 
-async def handle_sse(request: Request):
+async def app(scope, receive, send):
     """
-    1. Client connects here to start the session.
-    2. We upgrade the connection to an SSE stream.
+    A simple raw ASGI application that routes requests manually.
+    This avoids Starlette/FastAPI wrapping issues entirely.
     """
-    async with sse.connect_sse(
-        request.scope, request.receive, request._send
-    ) as streams:
-        await mcp_server.run(
-            streams[0], streams[1], mcp_server.create_initialization_options()
-        )
+    if scope["type"] != "http":
+        return
 
-async def handle_messages(request: Request):
-    """
-    1. Client sends POST requests here with JSON-RPC commands (call_tool, etc).
-    2. We feed them into the MCP server via the transport.
-    """
-    await sse.handle_post_message(request.scope, request.receive, request._send)
+    path = scope["path"]
+    method = scope["method"]
 
-# Define the Starlette App (The actual Web Server)
-starlette_app = Starlette(
-    debug=True,
-    routes=[
-        Route("/sse", endpoint=handle_sse),
-        Route("/messages", endpoint=handle_messages, methods=["POST"]),
-    ],
-)
+    # Route 1: The SSE Stream (GET /sse)
+    if path == "/sse" and method == "GET":
+        print(f"➡️ Client connected to SSE stream", file=sys.stderr)
+        async with sse.connect_sse(scope, receive, send) as streams:
+            await mcp_server.run(
+                streams[0], streams[1], mcp_server.create_initialization_options()
+            )
+            
+    # Route 2: The Message Handler (POST /messages)
+    elif path == "/messages" and method == "POST":
+        print(f"📩 Received POST message", file=sys.stderr)
+        await sse.handle_post_message(scope, receive, send)
+        
+    # 404 Not Found for anything else
+    else:
+        await send({"type": "http.response.start", "status": 404, "headers": []})
+        await send({"type": "http.response.body", "body": b"Not Found"})
 
-# --- 5. ENTRY POINT ---
 if __name__ == "__main__":
-    # Cloud Run injects the PORT environment variable
     port = int(os.environ.get("PORT", 8080))
-    print(f"Starting SSE Server on port {port}...", file=sys.stderr)
-    uvicorn.run(starlette_app, host="0.0.0.0", port=port)
+    print(f"🚀 Starting Pure ASGI Server on port {port}...", file=sys.stderr)
+    uvicorn.run(app, host="0.0.0.0", port=port)

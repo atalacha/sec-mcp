@@ -1,0 +1,21 @@
+# --- Security (CRITICAL) ---
+token.json
+credentials.json
+
+# --- Python & Environment ---
+.venv/
+__pycache__/
+*.pyc
+.python-version
+
+# --- Git & metadata ---
+.git/
+.gitignore
+.dockerignore
+.gcloudignore
+README.md
+
+# --- Testing & Local Dev ---
+test_client.py
+server_cloud.py 
+# (Exclude server_cloud.py if you merged its logic into server.py)
